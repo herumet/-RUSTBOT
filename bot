@@ -1,79 +1,130 @@
 use dotenv::dotenv;
 use std::env;
+use rand::Rng;
 use thirtyfour::prelude::*;
 use tokio::time::{sleep, Duration};
+use chrono::{Local, NaiveTime};
 
-const LOGIN_URL: &str = "https://site2.sbisec.co.jp/ETGate/?_ControlID=WPLEThmR001Control&_PageID=DefaultPID&_DataStoreID=DSWPLEThmR001Control&_ActionID=DefaultAID&getFlg=on";
-const MONITOR_URL: &str = "https://site2.sbisec.co.jp/ETGate/";
-const POLLING_INTERVAL_MS: u64 = 500;
+// ログインページのURL
+const LOGIN_URL: &str = "https://www.sbisec.co.jp/ETGate/";
+// 在庫監視ページのURL
+const MONITOR_URL: &str = "https://site0.sbisec.co.jp/marble/domestic/top/cbsProductList.do";
+// 取引開始時間と終了時間
+const START_TIME: &str = "19:00:13"; // 自動起動する時間
+const END_TIME: &str = "19:05:00";  // 自動終了する時間
 
 #[tokio::main]
 async fn main() -> WebDriverResult<()> {
-    // 環境変数のロード
+    // 環境変数を読み込む（.envファイルからユーザー名とパスワードを取得）
     dotenv().ok();
-    let username = env::var("SBI_USERNAME").expect("SBI_USERNAME is not set in .env");
-    let password = env::var("SBI_PASSWORD").expect("SBI_PASSWORD is not set in .env");
+    let username = env::var("SBI_USERNAME").expect("SBI_USERNAME is not set in .env"); // ユーザー名
+    let password = env::var("SBI_PASSWORD").expect("SBI_PASSWORD is not set in .env"); // パスワード
 
-    // WebDriverの初期化（ChromeDriverを想定）
-    let caps = DesiredCapabilities::chrome();
+    // WebDriver（ブラウザ自動操作ツール）の初期化
+    let caps = DesiredCapabilities::chrome(); // Chromeブラウザの設定を使用
     let driver = WebDriver::new("http://localhost:4444", caps).await?;
 
-    // ログインプロセス
-    println!("Logging in...");
-    login(&driver, &username, &password).await?;
+    // 指定された時間まで待機
+    wait_until_start_time().await;
 
-    // 在庫監視プロセス
-    println!("Monitoring started...");
-    monitor_and_trade(&driver).await?;
+    println!("Logging in..."); // ログイン開始のログ
+    login(&driver, &username, &password).await?; // ログイン処理
 
-    // WebDriverを終了
-    driver.quit().await?;
+    println!("Monitoring started..."); // 在庫監視開始のログ
+    monitor_and_trade(&driver).await?; // 在庫監視と取引実行
+
+    driver.quit().await?; // WebDriverを終了（ブラウザを閉じる）
     Ok(())
 }
 
+// 指定された開始時間まで待機
+async fn wait_until_start_time() {
+    let start_time = NaiveTime::parse_from_str(START_TIME, "%H:%M:%S").expect("Invalid start time format");
+    while Local::now().time() < start_time {
+        println!("Waiting for start time..."); // 開始時間までの待機ログ
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+// ログイン処理
 async fn login(driver: &WebDriver, username: &str, password: &str) -> WebDriverResult<()> {
-    driver.get(LOGIN_URL).await?;
+    driver.get(LOGIN_URL).await?; // ログインページにアクセス
+
+    // ユーザー名を入力
     driver.find_element(By::Name("user_id")).await?.send_keys(username).await?;
+    // パスワードを入力
     driver.find_element(By::Name("user_password")).await?.send_keys(password).await?;
+    // ログインボタンをクリック
     driver.find_element(By::Id("login_button")).await?.click().await?;
+
+    // ログイン成功を確認（ページタイトルをチェック）
+    let page_title = driver.title().await?;
+    if !page_title.contains("ホーム") {
+        panic!("Login failed. 認証情報を確認して"); // ログイン失敗時にエラーを発生
+    }
+    println!("Login successful!"); // ログイン成功のログ
     Ok(())
 }
 
+// 在庫監視と取引実行
 async fn monitor_and_trade(driver: &WebDriver) -> WebDriverResult<()> {
-    loop {
-        driver.get(MONITOR_URL).await?;
-        let stock_status = driver
-            .find_element(By::Css(".stock-status-class")) // 実際のCSSセレクタに置き換え
-            .await?
-            .text()
-            .await?;
-        
-        if stock_status.contains("在庫あり") {
-            println!("Stock detected: {}", stock_status);
-            if execute_trade(driver).await.is_ok() {
-                println!("Trade executed successfully!");
-                break;
-            } else {
-                println!("Trade execution failed. Retrying...");
+    let watch_list = vec!["銘柄A", "銘柄B", "銘柄C"]; // 監視対象の銘柄リスト
+    let end_time = NaiveTime::parse_from_str(END_TIME, "%H:%M:%S").expect("Invalid end time format"); // 取引終了時間を設定
+
+    while Local::now().time() < end_time {
+        driver.get(MONITOR_URL).await?; // 在庫監視ページをリロード
+
+        for stock in &watch_list {
+            match check_stock(driver, stock).await {
+                Ok(true) => {
+                    println!("{} の在庫を検出しました。取引を実行します...", stock); // 在庫検知時のログ
+                    if let Err(e) = execute_trade(driver, stock).await {
+                        eprintln!("Trade failed for {}: {:?}", stock, e); // 取引失敗時のエラーログ
+                    } else {
+                        println!("Trade executed successfully for {}!", stock); // 取引成功時のログ
+                        return Ok(());
+                    }
+                }
+                Ok(false) => {
+                    println!("{} の在庫はまだありません.", stock); // 在庫未検知時のログ
+                }
+                Err(e) => {
+                    eprintln!("{}の在庫確認でエラーが発生しました : {:?}", stock, e); // 在庫確認エラー時のログ
+                }
             }
         }
-        sleep(Duration::from_millis(POLLING_INTERVAL_MS)).await;
+
+        // 次回のポーリングまで待機（1秒～1.8秒のランダム間隔）
+        let polling_interval = rand::thread_rng().gen_range(1000..=1800);
+        println!("Next poll in {} ms", polling_interval); // 次回ポーリング時間のログ
+        sleep(Duration::from_millis(polling_interval)).await;
     }
+
+    println!("監視終了。取引は実行されませんでした。"); // 監視終了時のログ
     Ok(())
 }
 
-async fn execute_trade(driver: &WebDriver) -> WebDriverResult<()> {
-    driver
-        .find_element(By::Css(".trade-button-class")) // 実際のCSSセレクタに置き換え
-        .await?
-        .click()
-        .await?;
-    
-    driver
-        .find_element(By::Name("confirm_button"))
-        .await?
-        .click()
-        .await?;
-    
-    Ok(())
+// 銘柄の在庫確認
+async fn check_stock(driver: &WebDriver, stock: &str) -> WebDriverResult<bool> {
+    let xpath = format!(
+        "//*[contains(text(), '{}')]/../..//*[contains(@class, 'status-class')]",
+        stock
+    );
+    if let Ok(element) = driver.find_element(By::XPath(&xpath)).await {
+        let status = element.text().await?; // 在庫ステータスを取得
+        return Ok(status.contains("在庫あり")); // 在庫ありかどうかを確認
+    }
+    Ok(false) // 在庫が見つからない場合
+}
+
+// 取引実行処理
+async fn execute_trade(driver: &WebDriver, stock: &str) -> WebDriverResult<()> {
+    let trade_xpath = format!(
+        "//*[contains(text(), '{}')]/../..//*[contains(@class, 'trade-button-class')]",
+        stock
+    );
+    driver.find_element(By::XPath(&trade_xpath)).await?.click().await?; // 取引ボタンをクリック
+
+    driver.find_element(By::Name("confirm_button")).await?.click().await?; // 確認ボタンをクリック
+    Ok(()) // 取引完了
 }
