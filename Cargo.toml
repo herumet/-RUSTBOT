@@ -1,2 +1,6 @@
 [dependencies]
-cargo add dotenv rand thirtyfour tokio chrono
+dotenv = "0.15"
+rand = "0.8"
+thirtyfour = "0.30"
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
