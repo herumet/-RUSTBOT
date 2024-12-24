@@ -1,0 +1,79 @@
+use dotenv::dotenv;
+use std::env;
+use thirtyfour::prelude::*;
+use tokio::time::{sleep, Duration};
+
+const LOGIN_URL: &str = "https://site2.sbisec.co.jp/ETGate/?_ControlID=WPLEThmR001Control&_PageID=DefaultPID&_DataStoreID=DSWPLEThmR001Control&_ActionID=DefaultAID&getFlg=on";
+const MONITOR_URL: &str = "https://site2.sbisec.co.jp/ETGate/";
+const POLLING_INTERVAL_MS: u64 = 500;
+
+#[tokio::main]
+async fn main() -> WebDriverResult<()> {
+    // 環境変数のロード
+    dotenv().ok();
+    let username = env::var("SBI_USERNAME").expect("SBI_USERNAME is not set in .env");
+    let password = env::var("SBI_PASSWORD").expect("SBI_PASSWORD is not set in .env");
+
+    // WebDriverの初期化（ChromeDriverを想定）
+    let caps = DesiredCapabilities::chrome();
+    let driver = WebDriver::new("http://localhost:4444", caps).await?;
+
+    // ログインプロセス
+    println!("Logging in...");
+    login(&driver, &username, &password).await?;
+
+    // 在庫監視プロセス
+    println!("Monitoring started...");
+    monitor_and_trade(&driver).await?;
+
+    // WebDriverを終了
+    driver.quit().await?;
+    Ok(())
+}
+
+async fn login(driver: &WebDriver, username: &str, password: &str) -> WebDriverResult<()> {
+    driver.get(LOGIN_URL).await?;
+    driver.find_element(By::Name("user_id")).await?.send_keys(username).await?;
+    driver.find_element(By::Name("user_password")).await?.send_keys(password).await?;
+    driver.find_element(By::Id("login_button")).await?.click().await?;
+    Ok(())
+}
+
+async fn monitor_and_trade(driver: &WebDriver) -> WebDriverResult<()> {
+    loop {
+        driver.get(MONITOR_URL).await?;
+        let stock_status = driver
+            .find_element(By::Css(".stock-status-class")) // 実際のCSSセレクタに置き換え
+            .await?
+            .text()
+            .await?;
+        
+        if stock_status.contains("在庫あり") {
+            println!("Stock detected: {}", stock_status);
+            if execute_trade(driver).await.is_ok() {
+                println!("Trade executed successfully!");
+                break;
+            } else {
+                println!("Trade execution failed. Retrying...");
+            }
+        }
+        sleep(Duration::from_millis(POLLING_INTERVAL_MS)).await;
+    }
+    Ok(())
+}
+
+async fn execute_trade(driver: &WebDriver) -> WebDriverResult<()> {
+    driver
+        .find_element(By::Css(".trade-button-class")) // 実際のCSSセレクタに置き換え
+        .await?
+        .click()
+        .await?;
+    
+    driver
+        .find_element(By::Name("confirm_button"))
+        .await?
+        .click()
+        .await?;
+    
+    Ok(())
+}
