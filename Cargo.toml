@@ -1,0 +1,4 @@
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+thirtyfour = "0.35"
+dotenv = "0.15"
